@@ -1,0 +1,2 @@
+# Git for Windows checks out CRLF, and prettier's default endOfLine of `lf` rejects every file it sees there.
+* text=auto eol=lf

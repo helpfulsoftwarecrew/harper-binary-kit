@@ -1,0 +1,6 @@
+node_modules
+.idea/
+dist/
+.claude/
+CLAUDE.local.md
+.DS_Store

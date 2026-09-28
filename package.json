@@ -1,0 +1,59 @@
+{
+	"name": "@helpfulsoftwarecrew/harper-binary-kit",
+	"version": "1.0.0-rc.1",
+	"description": "Ship a native binary from a Harper component: one platform package per host, staged, verified, published, and resolved back at runtime",
+	"keywords": [
+		"harper",
+		"harperdb",
+		"binary",
+		"optionaldependencies",
+		"platform-package",
+		"npm-publish",
+		"cross-platform"
+	],
+	"type": "module",
+	"license": "Apache-2.0",
+	"author": "HelpfulSoftwareCrew",
+	"engines": {
+		"node": "^22.18.0 || >=24.0.0"
+	},
+	"exports": {
+		"./resolve": "./src/resolve.js",
+		"./cli": "./src/cli.js",
+		"./layout": "./src/layout.js",
+		"./packages": "./src/packages.js",
+		"./targets": "./src/targets.js",
+		"./package.json": "./package.json"
+	},
+	"bin": {
+		"harper-binary-kit": "./src/cli.js"
+	},
+	"files": [
+		"src/",
+		"README.md"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/helpfulsoftwarecrew/harper-binary-kit.git"
+	},
+	"homepage": "https://github.com/helpfulsoftwarecrew/harper-binary-kit#readme",
+	"bugs": {
+		"url": "https://github.com/helpfulsoftwarecrew/harper-binary-kit/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"lint": "oxlint",
+		"test": "node --test \"test/**/*.test.js\""
+	},
+	"devDependencies": {
+		"@types/node": "^26.5.1",
+		"oxlint": "^1.82.0",
+		"prettier": "^3.9.6",
+		"typescript": "^7.0.2"
+	}
+}

@@ -1,0 +1,96 @@
+# Called by a consumer rather than copied: every step reads binary-kit.config.js, and only the build is theirs.
+# Actions are pinned by SHA because a caller's org may refuse a tag, and that refusal fails the caller's run.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The version to release. Usually the tag without its leading v.
+        required: true
+        type: string
+      targets:
+        description: JSON array of target names, matching binary-kit.config.js.
+        required: true
+        type: string
+      node-version-file:
+        description: Where the node version comes from. package.json's engines by default.
+        required: false
+        default: package.json
+        type: string
+    secrets:
+      NPM_TOKEN:
+        description: The first publish of a new name, and dist-tag writes
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: ${{ inputs.node-version-file }}
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      # Build jobs name each artifact by target, so the layout below is the kit's own rather than one rebuilt here.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+
+      - name: Put the artifacts where the kit looks for them
+        run: |
+          set -euo pipefail
+          for target in $(echo '${{ inputs.targets }}' | node -e 'JSON.parse(require("node:fs").readFileSync(0,"utf8")).forEach(t=>console.log(t))'); do
+            if [ -d "artifacts/bin-$target" ]; then
+              mkdir -p "build/$target/bin"
+              mv "artifacts/bin-$target"/* "build/$target/bin/"
+            fi
+            # Anything shipped beside the binaries keeps its own path under the build tree, which is what
+            # `extraDirs` names and what the staging copies verbatim.
+            if [ -d "artifacts/share-$target" ]; then
+              mkdir -p "build/$target/share"
+              mv "artifacts/share-$target"/* "build/$target/share/"
+            fi
+          done
+
+      # The release's version, set the way npm sets it, so optionalDependencies move with it. --allow-same-version
+      # makes a re-run of the same tag safe.
+      - name: Set the version from the release
+        run: npm version '${{ inputs.version }}' --no-git-tag-version --allow-same-version
+
+      - run: npx harper-binary-kit stage
+
+      # Every target: `floor` is a no-op where a config declares none, and a build on a newer runner produces
+      # a binary that will not load on the image it ships to while every test on that runner passes.
+      - name: Symbol floors
+        run: |
+          set -euo pipefail
+          echo '${{ inputs.targets }}' \
+            | node -e 'JSON.parse(require("node:fs").readFileSync(0,"utf8")).forEach(t=>console.log(t))' \
+            | while read -r target; do npx harper-binary-kit floor "$target"; done
+
+      - run: npx harper-binary-kit verify
+
+      # A re-run skips versions the registry serves, but serving can lag an accepted publish, so a re-run inside
+      # that lag fails on npm's refusal to publish over it and a later one finishes the release.
+      - run: npx harper-binary-kit publish
+        env:
+          # A trusted publisher needs a package that exists, so the token is what creates a new name.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # A token publish attaches no provenance unless asked.
+          NPM_CONFIG_PROVENANCE: 'true'
+
+      # The publish above normally set latest already, and this then writes nothing. A token is passed because
+      # OIDC does not cover `dist-tag add`, and a refused write prints the command to run by hand.
+      - name: Point latest at this release
+        if: ${{ !contains(inputs.version, '-') }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npx harper-binary-kit latest

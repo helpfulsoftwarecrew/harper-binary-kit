@@ -1,0 +1,140 @@
+name: Publish
+
+on:
+  # A hand-pushed v* tag is the only publish trigger; a merge alone ships nothing.
+  push:
+    tags: ['v*']
+
+# The default for every job, including the reusable test call, which otherwise runs on the repo default
+# token grant; the publish job re-elevates id-token in its own block, where the registry needs it.
+permissions:
+  contents: read
+
+# Deleting and re-pushing a tag while a run is still live must queue behind it, not interleave around
+# the npm publish step.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The same workflow that gates every branch push, called whole, so a tag cannot publish on weaker checks than a PR merges on.
+  test:
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    # An npm ci and a publish; the margin is for a runner that never schedules.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Provenance is signed from this token, and the trusted publisher that uses it after a name's first
+      # publish names this repository and this workflow file.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A pause on publishing is spelled `"private": true` in the manifest; this step is what makes that spelling stick.
+      - name: Refuse to publish while package.json says private
+        run: |
+          node -e '
+            const manifest = JSON.parse(require("node:fs").readFileSync("package.json", "utf8"));
+            if (manifest.private) {
+              console.log("::error::package.json still carries \"private\": true, so publishing is refused. Remove the flag once the package is ready to ship, then re-tag.");
+              process.exit(1);
+            }
+          '
+
+      # A tag naming one version while the manifest carries another would ship the wrong bits under a traceable name.
+      - name: Refuse a tag that disagrees with package.json
+        run: |
+          node -e '
+            const { version } = JSON.parse(require("node:fs").readFileSync("package.json", "utf8"));
+            const tag = process.env.GITHUB_REF_NAME;
+            if (tag !== `v${version}`) {
+              console.log(`::error::Tag ${tag} does not match package.json version ${version}. Bump the version or move the tag so the two agree, then push the tag again.`);
+              process.exit(1);
+            }
+          '
+
+      # Consumers call `release.yml` at a tag, so a tag that publishes the package without carrying the
+      # reusable workflow would leave `uses: ...@vX` resolving to a ref that has no such file.
+      - name: Refuse a tag whose reusable workflow is missing
+        run: |
+          test -f .github/workflows/release.yml || {
+            echo "::error::This tag carries no .github/workflows/release.yml, which is the file consumers name in \`uses:\`. Publishing it would hand them a ref that resolves to nothing."
+            exit 1
+          }
+
+      # npm refuses a prerelease without an explicit --tag. This is the kit's distTag() rule, numeric refusal
+      # included; npm still gives a name's first publish latest, whatever --tag says.
+      - name: Derive the dist-tag from the version
+        id: dist
+        run: |
+          node -e '
+            const { version } = JSON.parse(require("node:fs").readFileSync("package.json", "utf8"));
+            const identifier = version.split("-")[1]?.split(".")[0];
+            if (identifier !== undefined && !/^[a-zA-Z][a-zA-Z0-9-]*$/.test(identifier)) {
+              console.log(`::error::Version ${version} has the prerelease identifier "${identifier}", which is what npm version prerelease writes when no --preid was given. Name the prerelease (1.2.3-next.0, 1.2.3-rc.0), then re-tag.`);
+              process.exit(1);
+            }
+            const tag = identifier === undefined ? "latest" : "next";
+            require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\n`);
+            console.log(`Publishing ${version} under the ${tag} dist-tag.`);
+          '
+
+      # No build: the tarball is src/ as the matrix tested it. A served version is skipped, since npm refuses a
+      # republish and a re-run would otherwise fail on its own release.
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # A name's first publish goes out under the token, which attaches no provenance unless asked.
+          NPM_CONFIG_PROVENANCE: 'true'
+        run: |
+          set -euo pipefail
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          if [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then
+            echo "already published $name@$version; the registry serves it, so it was not published again"
+            exit 0
+          fi
+          npm publish --access public --tag '${{ steps.dist.outputs.tag }}'
+
+      # Normally finds latest already naming this version and writes nothing, so an expired token cannot turn a
+      # finished release red. isNewer() rather than `sort -V`, which ranks 1.0.0-rc.1 above 1.0.0.
+      - name: Point latest at this release
+        if: steps.dist.outputs.tag == 'latest'
+        env:
+          # OIDC covers `npm publish` and not `dist-tag add`, so a token is what moves the tag.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -o pipefail
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          current="$(npm view "$name" dist-tags.latest 2>/dev/null || true)"
+          if [ "$current" = "$version" ]; then
+            echo "latest already names $version for $name; nothing to write"
+            exit 0
+          fi
+          if [ -n "$current" ] && node --input-type=module -e 'import { isNewer } from "./src/publish.js"; process.exit(isNewer(process.argv[1], process.argv[2]) ? 0 : 1)' "$current" "$version"; then
+            echo "Leaving $name at latest=$current, which is newer than $version"
+            exit 0
+          fi
+          if npm dist-tag add "$name@$version" latest; then
+            echo "latest -> $version for $name"
+          else
+            echo "::error::latest was not moved. The release itself published; only the tag is stale. Run this with a credential that can write dist-tags:"
+            echo "  npm dist-tag add $name@$version latest"
+            exit 1
+          fi
