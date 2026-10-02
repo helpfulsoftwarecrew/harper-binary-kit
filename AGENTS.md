@@ -65,7 +65,8 @@ and 24, and refuses a run whose test glob matched nothing.
 ## Releasing
 
 A `v*` tag runs `publish.yml`, which refuses a tag that disagrees with `package.json`, so each released version
-is its own commit. Both workflows refuse a prerelease version and publish through npm's trusted publishing
+is its own commit. Its test gate runs on Linux and Windows only, so macOS no longer gates a publish, and the
+macOS suite is run locally before each tag. Both workflows refuse a prerelease version and publish through npm's trusted publishing
 alone, with no token and no `registry-url`, since npm's OIDC exchange authorises `npm publish` and nothing else.
 That is why the dist-tag is chosen before each publish rather than written after it: `latest` when the version
 is newer than the package's current `latest` or the name is new, `release-<major>.<minor>` for a patch to an

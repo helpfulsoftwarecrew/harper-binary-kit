@@ -6,8 +6,15 @@ on:
     branches: ['**']
   pull_request:
   workflow_dispatch:
-  # publish.yml runs this workflow whole as its gate, so the publish path cannot drift onto weaker checks.
+  # publish.yml runs this workflow as its gate, so the publish path cannot drift onto weaker checks; it narrows
+  # only the runners, through `os`, and every other check runs as it does on a push.
   workflow_call:
+    inputs:
+      os:
+        description: JSON array of runner labels for the test matrix. All three hosts by default.
+        required: false
+        default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
+        type: string
 
 # Nothing here writes with GITHUB_TOKEN; without this line every job takes the repo default, which can be write-all.
 permissions:
@@ -27,7 +34,8 @@ jobs:
       matrix:
         # All three, because the staging and the gate both branch on the host: a Windows binary carries an
         # .exe suffix everywhere it is named, and npm is spawned through a shell there and not elsewhere.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # A push, pull_request or dispatch carries no inputs, so the fallback is the same three as the default above.
+        os: ${{ fromJSON(inputs.os || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
         # Harper v5 declares engines.node "^22.18.0 || >=24.0.0", so 22 and 24 are the two versions that exist in the field.
         node: ['22', '24']
     runs-on: ${{ matrix.os }}
