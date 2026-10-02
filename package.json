@@ -1,6 +1,6 @@
 {
 	"name": "@helpfulsoftwarecrew/harper-binary-kit",
-	"version": "1.0.2",
+	"version": "1.1.0",
 	"description": "Ship a native binary from a Harper component: one platform package per host, staged, verified, published, and resolved back at runtime",
 	"keywords": [
 		"harper",
