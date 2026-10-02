@@ -448,6 +448,55 @@ test('NEGATIVE: releaseConfig refuses an asset for an undeclared target or binar
 	assert.throws(() => releaseConfig({ ...config, release: undefined }), /declares no `release` block/);
 });
 
+test('NEGATIVE: releaseConfig refuses a whitespace-only sigstore issuer', () => {
+	for (const issuer of [' ', '\t\n'])
+		assert.throws(
+			() => releaseConfig(configWith({ sigstore: { bundle: '{asset}.sigstore.json', issuer, identity: 'x' } })),
+			/issuer must name the OIDC issuer/
+		);
+});
+
+test('NEGATIVE: releaseConfig counts an empty identity as given, and refuses empty or non-string values', () => {
+	const base = { bundle: '{asset}.sigstore.json', issuer: 'https://issuer.example' };
+	// An empty identity beside a pattern is two given, not one: before, the pattern filled the gap.
+	assert.throws(
+		() => releaseConfig(configWith({ sigstore: { ...base, identity: '', identityRegexp: '^https://a/' } })),
+		/exactly one of identity and identityRegexp/
+	);
+	assert.throws(
+		() => releaseConfig(configWith({ sigstore: { ...base, identity: 'https://a/wf', identityRegexp: '' } })),
+		/exactly one of identity and identityRegexp/
+	);
+	for (const [key, value] of /** @type {[string, any][]} */ ([
+		['identity', ''],
+		['identity', '  '],
+		['identity', 42],
+		['identity', null],
+		['identityRegexp', ''],
+		['identityRegexp', ['^https://']],
+		['identityRegexp', null],
+	]))
+		assert.throws(
+			() => releaseConfig(configWith({ sigstore: { ...base, [key]: value } })),
+			new RegExp(`release\\.sigstore\\.${key} must be a non-empty string`),
+			`${key}: ${JSON.stringify(value)}`
+		);
+	assert.doesNotThrow(() => releaseConfig(configWith({ sigstore: { ...base, identity: 'https://a/wf' } })));
+	assert.doesNotThrow(() => releaseConfig(configWith({ sigstore: { ...base, identityRegexp: 'https://a/.*' } })));
+});
+
+test('NEGATIVE: releaseConfig refuses an identity pattern that only parses once it is anchored', () => {
+	const base = { bundle: '{asset}.sigstore.json', issuer: 'https://issuer.example' };
+	// Wrapped, this would be ^(?:x)|(.*)$, which parses and matches every identity.
+	assert.ok(new RegExp(cosignArgs({ ...base, identityRegexp: 'x)|(.*' }, 'b', 'blob')[4] ?? '').test('https://evil/'));
+	for (const identityRegexp of ['x)|(.*', '(x', '[a-'])
+		assert.throws(
+			() => releaseConfig(configWith({ sigstore: { ...base, identityRegexp } })),
+			/identityRegexp is not a pattern on its own/,
+			identityRegexp
+		);
+});
+
 test('cosign gets an exact identity as given and an identity pattern anchored at both ends', () => {
 	const base = { bundle: '{asset}.sigstore.json', issuer: 'https://issuer.example' };
 	assert.deepEqual(cosignArgs({ ...base, identity: 'https://a/wf.yaml@refs/tags/v1' }, 'b.json', 'blob'), [

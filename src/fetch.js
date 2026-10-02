@@ -90,13 +90,24 @@ export function releaseConfig(config) {
 	if (sigstore) {
 		if (typeof sigstore.bundle !== 'string' || !sigstore.bundle.includes('{asset}'))
 			throw new Error('release.sigstore.bundle must name the bundle asset with {asset} in it');
-		if (typeof sigstore.issuer !== 'string' || sigstore.issuer === '')
+		if (typeof sigstore.issuer !== 'string' || sigstore.issuer.trim() === '')
 			throw new Error('release.sigstore.issuer must name the OIDC issuer');
-		if (!sigstore.identity === !sigstore.identityRegexp)
-			throw new Error('release.sigstore needs exactly one of identity and identityRegexp');
-		const identity = sigstore.identity ?? sigstore.identityRegexp;
-		if (typeof identity !== 'string')
-			throw new Error('release.sigstore.identity and identityRegexp must be strings when given');
+		// Given means present at all: an empty identity beside a pattern is a mistake to refuse, not a gap the
+		// pattern quietly fills.
+		const given = ['identity', 'identityRegexp'].filter((key) => sigstore[key] !== undefined);
+		if (given.length !== 1) throw new Error('release.sigstore needs exactly one of identity and identityRegexp');
+		const key = /** @type {'identity' | 'identityRegexp'} */ (given[0]);
+		if (typeof sigstore[key] !== 'string' || sigstore[key].trim() === '')
+			throw new Error(`release.sigstore.${key} must be a non-empty string`);
+		if (key === 'identityRegexp') {
+			// It must stand as a pattern on its own before cosignArgs wraps it: `x)|(.*` would otherwise close the
+			// anchoring group early and match any identity.
+			try {
+				new RegExp(sigstore.identityRegexp);
+			} catch (error) {
+				throw new Error(`release.sigstore.identityRegexp is not a pattern on its own: ${error}`);
+			}
+		}
 	}
 	return release;
 }
@@ -164,9 +175,10 @@ export function readPins(root, release) {
  * @param {SigstoreConfig} sigstore @param {string} bundlePath @param {string} blobPath @returns {string[]}
  */
 export function cosignArgs(sigstore, bundlePath, blobPath) {
-	const identity = sigstore.identity
-		? ['--certificate-identity', sigstore.identity]
-		: ['--certificate-identity-regexp', `^(?:${sigstore.identityRegexp})$`];
+	const identity =
+		sigstore.identity !== undefined
+			? ['--certificate-identity', sigstore.identity]
+			: ['--certificate-identity-regexp', `^(?:${sigstore.identityRegexp})$`];
 	return ['verify-blob', '--bundle', bundlePath, ...identity, '--certificate-oidc-issuer', sigstore.issuer, blobPath];
 }
 
