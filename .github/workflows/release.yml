@@ -17,10 +17,6 @@ on:
         required: false
         default: package.json
         type: string
-    secrets:
-      NPM_TOKEN:
-        description: The first publish of a new name, and dist-tag writes
-        required: false
 
 permissions:
   contents: read
@@ -35,7 +31,30 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: ${{ inputs.node-version-file }}
-          registry-url: https://registry.npmjs.org
+          # No registry-url: it writes an .npmrc whose auth line reads NODE_AUTH_TOKEN, and OIDC needs nothing from it.
+
+      # Trusted publishing arrived in npm 11.5.1, and with no token to fall back on an older npm reads as a 404.
+      - name: Refuse an npm without trusted publishing
+        run: |
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              console.log(`::error::npm ${process.argv[1]} cannot publish through a trusted publisher, which needs npm 11.5.1 or later, and this workflow holds no token. Point node-version-file at a Node that ships one.`);
+              process.exit(1);
+            }
+          ' "$(npm --version)"
+
+      # Before any build is staged; `harper-binary-kit publish` refuses one too, for a caller that skips this file.
+      - name: Refuse a prerelease version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$VERSION" in
+            *-*)
+              echo "::error::Version $VERSION is a prerelease, and prereleases are not published. Release it as a plain major.minor.patch version."
+              exit 1
+              ;;
+          esac
 
       - run: npm ci
 
@@ -79,18 +98,10 @@ jobs:
       - run: npx harper-binary-kit verify
 
       # A re-run skips versions the registry serves, but serving can lag an accepted publish, so a re-run inside
-      # that lag fails on npm's refusal to publish over it and a later one finishes the release.
+      # that lag fails on npm's refusal to publish over it and a later one finishes the release. Each package goes
+      # out under latest, or under release-<major>.<minor> when its latest names a newer line, chosen before
+      # its publish since OIDC authorises `npm publish` and no dist-tag write. A name the registry has never
+      # seen cannot be created this way: its first version is published by hand, then its trusted publisher added.
       - run: npx harper-binary-kit publish
         env:
-          # A trusted publisher needs a package that exists, so the token is what creates a new name.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # A token publish attaches no provenance unless asked.
           NPM_CONFIG_PROVENANCE: 'true'
-
-      # The publish above normally set latest already, and this then writes nothing. A token is passed because
-      # OIDC does not cover `dist-tag add`, and a refused write prints the command to run by hand.
-      - name: Point latest at this release
-        if: ${{ !contains(inputs.version, '-') }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx harper-binary-kit latest

@@ -40,8 +40,8 @@ Ten files under `src/`, ESM with `// @ts-check` and JSDoc, nothing built.
 - `resolve.js`: the runtime half. Asks each installed platform package by filename and checks the filename that comes back. A consumer passes its own `load`, because a bare specifier resolves against the file that imports it, and a symlinked or nested install would otherwise look beside the kit rather than beside the consumer.
 - `verify.js`: what `npm pack` WOULD ship, per package, plus the declared symbols.
 - `floor.js`: the symbol versions a binary needs against what the target image provides.
-- `publish.js`: attempt every package the registry does not already hold, under `next` for a prerelease and `latest` for a stable version, and advance `latest` forward only.
-- `published.js`: read the registry back, at the version endpoint.
+- `publish.js`: refuse a prerelease, then attempt every package the registry does not already hold, each under `latest` when it is newer than that package's current `latest` and under `release-<major>.<minor>` otherwise.
+- `published.js`: what a package's `latest` names now, and the read-back, at the version endpoint.
 - `cli.js`: one command per step.
 
 ## The rule every file here follows
@@ -65,16 +65,16 @@ and 24, and refuses a run whose test glob matched nothing.
 ## Releasing
 
 A `v*` tag runs `publish.yml`, which refuses a tag that disagrees with `package.json`, so each released version
-is its own commit. A prerelease goes out under `next` and leaves `latest` alone; a stable version goes out
-under `latest`. `NPM_TOKEN` creates a name on its first publish, since a trusted publisher can only be
-configured on a package that already exists; after that the OIDC exchange is expected to run first with the
-token as the fallback, which no run has shown yet. A token publish attaches no provenance by default, so both
-workflows ask for it. A re-run of either workflow skips a version the registry already serves and a `latest`
-that already names the release. Both workflows ask the registry before each publish, and the registry has
-taken more than 20 minutes to serve a publish it accepted, which is why the read-back in `src/published.js`
-waits up to 30 minutes. A re-run inside that lag attempts the publish again and fails on npm's refusal to
-publish over an existing version; a later re-run, once the registry serves the version, skips it and finishes
-the release.
+is its own commit. Both workflows refuse a prerelease version and publish through npm's trusted publishing
+alone, with no token and no `registry-url`, since npm's OIDC exchange authorises `npm publish` and nothing else.
+That is why the dist-tag is chosen before each publish rather than written after it: `latest` when the version
+is newer than the package's current `latest` or the name is new, `release-<major>.<minor>` for a patch to an
+older line. A trusted publisher can only be configured on a package that already exists, so a new name's first
+version is published by hand. A re-run of either workflow skips a version the registry already serves. Both
+workflows ask the registry before each publish, and the registry has taken more than 20 minutes to serve a
+publish it accepted, which is why the read-back in `src/published.js` waits up to 30 minutes. A re-run inside
+that lag attempts the publish again and fails on npm's refusal to publish over an existing version; a later
+re-run, once the registry serves the version, skips it and finishes the release.
 
 `release.yml` runs `npx harper-binary-kit` after `npm ci` in the calling repository, so it runs the kit that
 repository has installed: the tag in a caller's `uses:` line supplies only the workflow YAML, and a fix to the

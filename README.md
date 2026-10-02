@@ -88,7 +88,6 @@ harper-binary-kit stage      # build trees -> npm/<name>/, manifest, index.js, R
 harper-binary-kit floor linux-x86_64   # symbol versions against the image the binaries ship to
 harper-binary-kit verify     # what npm WOULD pack, per package
 harper-binary-kit publish    # every package, attempting all of them, then read the registry back
-harper-binary-kit latest     # point latest at a stable release, forward only
 harper-binary-kit deps       # what optionalDependencies should say, for `npm version`
 harper-binary-kit names      # every package name, for a workflow that needs the list
 ```
@@ -118,15 +117,20 @@ publish to a name with no trusted publisher with 404 rather than 403, so "not co
 identically and trying is the only way to find out. A version the registry already serves is skipped and
 reported as already published. That check reads what the registry serves, which has trailed a publish by more
 than 20 minutes, so a re-run after a partial publish can still fail inside that window on npm's refusal to
-publish a version it holds; a re-run after it finishes the release. A prerelease publishes under `next` and a
-stable version under `latest`. Then it reads the registry back, at the _version_ endpoint: `npm publish` exiting
-0 is not the package being there, and the packument lags its own writes by long enough to send somebody chasing
-a partial release that never happened.
+publish a version it holds; a re-run after it finishes the release. Then it reads the registry back, at the
+_version_ endpoint: `npm publish` exiting 0 is not the package being there, and the packument lags its own
+writes by long enough to send somebody chasing a partial release that never happened.
 
-**`latest`** moves for a stable version only, and forward only. npm assigns `latest` on a package's first
-publish whatever `--tag` said, so a line whose first version is a prerelease shows that prerelease as `latest`
-until the stable release; `latest` is what npmjs.com shows and what a bare `npm install` gets. A `latest` that
-already names the release is left alone with no registry write.
+**The dist-tag** is chosen per package before its publish, because a trusted publisher authorises `npm publish`
+and no dist-tag write after it. A version newer than the package's current `latest`, or the first version of a
+name, goes out under `latest`; a patch to an older line goes out under `release-<major>.<minor>`, which npm
+creates in the same call, so it never takes `latest` from the newer line. A prerelease is refused before
+anything reaches the registry. So is a package whose `latest` the registry would not say, since guessing could
+hand the older line to every bare `npm install`.
+
+**Publishing** is through npm's trusted publishing alone (OIDC, npm 11.5.1 or later), with no token. A trusted
+publisher can only be added to a package that exists, so a name's first version is published by hand; a 404 on
+the publish says so.
 
 ## Development
 

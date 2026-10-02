@@ -44,6 +44,27 @@ export async function isPublished(name, version, { fetch: get = globalThis.fetch
 	}
 }
 
+/** The abbreviated packument, which carries the dist-tags. @param {string} name */
+export const packumentUrl = (name, registry = REGISTRY) => `${registry}/${name.replace('/', '%2F')}`;
+
+/**
+ * What `latest` names now, or null for a name the registry has never published. Anything but a 404 or a parsed
+ * answer throws, since a guessed `latest` could hand a patch to an older line to every bare `npm install`.
+ *
+ * @param {string} name @param {{ fetch?: typeof globalThis.fetch, registry?: string }} [options]
+ * @returns {Promise<string | null>}
+ */
+export async function latestOf(name, { fetch: get = globalThis.fetch, registry = REGISTRY } = {}) {
+	const response = await get(packumentUrl(name, registry), {
+		headers: { accept: 'application/vnd.npm.install-v1+json' },
+	});
+	if (response.status === 404) return null;
+	if (!response.ok) throw new Error(`the registry answered ${response.status} for ${name}`);
+	const body = /** @type {{ 'dist-tags'?: { latest?: unknown } }} */ (await response.json());
+	const latest = body['dist-tags']?.latest;
+	return typeof latest === 'string' ? latest : null;
+}
+
 /**
  * Asks again until every package appears or the deadline passes, since only waiting separates a slow read
  * from an absent package, and a package that never published never appears.
@@ -89,18 +110,15 @@ export async function confirmPublished({
 }
 
 /**
- * Unconfirmed is not a failure: npm accepted every publish by now, and stopping here would skip the tag write.
- * For a stable version that write is the better gate, since it reads the store a GET from a CDN edge can lag.
+ * Unconfirmed is not a failure: npm accepted every publish by now, and a GET from a CDN edge can lag that.
  *
  * @param {readonly string[]} missing @param {string} version
  * @returns {string}
  */
 export function readBackLine(missing, version) {
 	if (missing.length === 0) return `every package of ${version} is on the registry`;
-	const next = version.includes('-')
-		? `A prerelease leaves latest alone, so no later step asks again: repeat \`npm view <name>@${version} ` +
-			`version\` for each of these once the registry catches up.`
-		: `Moving latest is the next step and it reads the authoritative store, so it fails if any of these is ` +
-			`truly absent.`;
-	return `the registry has not served ${missing.join(', ')} at ${version} yet, though npm accepted every publish. ${next}`;
+	return (
+		`the registry has not served ${missing.join(', ')} at ${version} yet, though npm accepted every publish. ` +
+		`Repeat \`npm view <name>@${version} version\` for each of these once the registry catches up.`
+	);
 }

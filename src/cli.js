@@ -10,7 +10,7 @@ import { resolve as resolvePath } from 'node:path';
 import { checkFloors } from './floor.js';
 import { buildTree } from './layout.js';
 import { allPackages, optionalDependencies } from './packages.js';
-import { advanceLatest, distTag, publishAll } from './publish.js';
+import { prereleaseRefusal, publishAll } from './publish.js';
 import { confirmPublished, readBackLine } from './published.js';
 import { stageAll } from './stage.js';
 import { binaryFilename, targets } from './targets.js';
@@ -106,9 +106,14 @@ const COMMANDS = {
 		for (const pkg of allPackages(config, targetList)) say(pkg.name);
 	},
 
-	/** Publish every package, attempting all of them, then read the registry back. */
+	/**
+	 * Publish every package under the tag its own `latest` calls for, attempting all of them, then read the
+	 * registry back. A prerelease is refused before anything reaches the registry.
+	 */
 	async publish(/** @type {string} */ root) {
 		const { config, version, targetList } = await load(root);
+		const refusal = prereleaseRefusal(version);
+		if (refusal) fail(refusal);
 		const packages = allPackages(config, targetList);
 		const { failed, lines } = await publishAll({ root, packages, rootName: config.scope, version });
 		for (const line of lines) say(line);
@@ -116,27 +121,11 @@ const COMMANDS = {
 		// Before the read-back, which would only wait out its whole budget to find a failed package absent.
 		if (failed.length > 0) fail(`${failed.length} package(s) did not publish: ${failed.map((f) => f.name).join(', ')}`);
 
-		// Read back to report, not to gate: a package the registry has not served yet looks like one it never
-		// took, and the next step can tell them apart where this cannot.
+		// Read back to report, not to gate: a package the registry has not served yet looks like one it never took.
 		const names = [config.scope, ...packages.map((pkg) => pkg.name)];
 		const { missing, lines: readBack } = await confirmPublished({ names, version });
 		for (const line of readBack) say(line);
-		say(`${readBackLine(missing, version)} Published under ${distTag(version)}.`);
-	},
-
-	/**
-	 * Point `latest` at a stable release, forward only; a prerelease leaves it alone before any registry call.
-	 * Fails loudly with the commands if it cannot.
-	 */
-	async latest(/** @type {string} */ root) {
-		const { config, version, targetList } = await load(root);
-		const names = [config.scope, ...allPackages(config, targetList).map((pkg) => pkg.name)];
-		const { failed, lines, commands } = advanceLatest({ names, version });
-		for (const line of lines) say(line);
-		if (failed.length === 0) return;
-		say('run these with a credential that can write dist-tags:');
-		for (const command of commands) say(`  ${command}`);
-		fail(`latest was not moved for ${failed.length} package(s); the release itself is published`);
+		say(readBackLine(missing, version));
 	},
 };
 

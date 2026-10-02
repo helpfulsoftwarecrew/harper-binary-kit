@@ -1,109 +1,124 @@
 // @ts-check
-// Every package is attempted, because a 404 means "no trusted publisher" as often as "not there"; `latest`
-// moves for a stable version only, forward only.
+// Every package is attempted, because a 404 means "no trusted publisher" as often as "not there". Each one's
+// dist-tag is chosen before its publish, since OIDC authorises `npm publish` and no dist-tag write after it.
 
 import { execFileSync } from 'node:child_process';
 
 import { packageDir } from './layout.js';
-import { isPublished } from './published.js';
+import { isPublished, latestOf } from './published.js';
 
 const NEEDS_SHELL = process.platform === 'win32';
 
 /**
- * `next` for any prerelease and `latest` for a stable version, so only a stable release moves what a bare
- * `npm install` gets. A numeric prerelease identifier is refused, the same rule publish.yml keeps.
- *
- * @param {string} version @returns {'next' | 'latest'}
+ * Why a version may not be published, or null. No prerelease goes out, so every published version is one a
+ * bare `npm install` may be handed. @param {string} version @returns {string | null}
  */
-export function distTag(version) {
-	const identifier = version.split('-')[1]?.split('.')[0];
-	if (identifier === undefined) return 'latest';
-	if (/^\d/.test(identifier)) {
-		throw new Error(
-			`version ${version} has the prerelease identifier "${identifier}", a number, which is what ` +
-				`\`npm version prerelease\` writes when no --preid was given. Name the prerelease (1.2.3-next.0, ` +
-				`1.2.3-beta.0) and re-tag.`
-		);
-	}
-	return 'next';
+export function prereleaseRefusal(version) {
+	if (!version.includes('-')) return null;
+	return (
+		`version ${version} is a prerelease, and prereleases are not published. Release it as a plain ` +
+		`major.minor.patch version and re-tag.`
+	);
+}
+
+/**
+ * `latest` for a version newer than the one `latest` names now, or for a name the registry has never
+ * published; `release-<major>.<minor>` for a patch to an older line, so it cannot take `latest` from the
+ * newer line. npm creates that tag in the same publish call.
+ *
+ * @param {string} version @param {string | null} current What `latest` names now, or null.
+ */
+export function distTag(version, current) {
+	const refusal = prereleaseRefusal(version);
+	if (refusal) throw new Error(refusal);
+	if (current === null || current === version || isNewer(version, current)) return 'latest';
+	const [major, minor] = version.split('.');
+	return `release-${major}.${minor}`;
 }
 
 /**
  * A version the registry already serves is skipped, since npm refuses a republish and a re-run would otherwise
- * fail on the part of a release that worked and withhold the root over it.
+ * fail on the part of a release that worked and withhold the root over it. Each package's tag comes from its own
+ * `latest`, since a name added after the first release has a `latest` of its own.
  *
  * @param {object} options
  * @param {string} options.root @param {readonly import('./packages.js').PlatformPackage[]} options.packages
  * @param {string} [options.rootName] The consumer's own package, published from `root` after the platform set.
- * @param {string} options.version @param {string} [options.tag]
+ * @param {string} options.version
  * @param {(command: string, args: string[], options: any) => unknown} [options.run]
  * @param {(name: string, version: string) => Promise<{ published: boolean, detail: string }>} [options.onRegistry]
- * @returns {Promise<{ published: string[], already: string[], failed: { name: string, reason: string }[], lines: string[] }>}
+ * @param {(name: string) => Promise<string | null>} [options.onLatest] What `latest` names now; throws when
+ *   the registry cannot tell.
+ * @returns {Promise<{ published: string[], already: string[], failed: { name: string, reason: string }[], tags: Record<string, string>, lines: string[] }>}
  */
 export async function publishAll({
 	root,
 	packages,
 	rootName,
 	version,
-	tag = distTag(version),
 	run = execFileSync,
 	onRegistry = (name, at) => isPublished(name, at),
+	onLatest = (name) => latestOf(name),
 }) {
+	// Before any registry call, so a prerelease leaves no trace on it.
+	const refusal = prereleaseRefusal(version);
+	if (refusal) throw new Error(refusal);
+
+	/** @type {string[]} */
 	const published = [];
 	/** @type {string[]} */
 	const already = [];
+	/** @type {{ name: string, reason: string }[]} */
 	const failed = [];
+	/** @type {Record<string, string>} */
+	const tags = {};
 	const lines = [];
 
-	/** @param {string} name */
-	const alreadyThere = async (name) => {
+	/** @param {string} name @param {string} cwd @param {string} hint What to add to a failure line. */
+	const publishOne = async (name, cwd, hint) => {
 		const { published: there } = await onRegistry(name, version);
-		if (!there) return false;
-		already.push(name);
-		lines.push(`already published ${name}@${version}; the registry serves it, so it was not published again`);
-		return true;
-	};
-
-	const attempt = packages.map((pkg) => ({ name: pkg.name, cwd: packageDir(root, pkg.dirName) }));
-	for (const pkg of attempt) {
-		if (await alreadyThere(pkg.name)) continue;
+		if (there) {
+			already.push(name);
+			lines.push(`already published ${name}@${version}; the registry serves it, so it was not published again`);
+			return;
+		}
+		let current;
+		try {
+			current = await onLatest(name);
+		} catch (error) {
+			// Guessing latest could hand a patch to an older line to every bare `npm install`.
+			const reason = `could not read its latest dist-tag: ${error instanceof Error ? error.message : String(error)}`;
+			failed.push({ name, reason });
+			lines.push(`FAILED ${name}@${version}: ${reason}. Nothing was published for it; re-run.`);
+			return;
+		}
+		const tag = distTag(version, current);
 		try {
 			run('npm', ['publish', '--access', 'public', '--tag', tag], {
-				cwd: pkg.cwd,
+				cwd,
 				encoding: 'utf-8',
 				shell: NEEDS_SHELL,
 				stdio: ['ignore', 'pipe', 'pipe'],
 			});
-			published.push(pkg.name);
-			lines.push(`published ${pkg.name}@${version} under ${tag}`);
+			published.push(name);
+			tags[name] = tag;
+			lines.push(`published ${name}@${version} under ${tag}${current ? ` (latest named ${current})` : ''}`);
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
-			failed.push({ name: pkg.name, reason });
-			lines.push(
-				`FAILED ${pkg.name}@${version}: ${reason}. A 404 on PUT means this name has no trusted publisher for ` +
-					`this repository and workflow; create one and re-run.`
-			);
+			failed.push({ name, reason });
+			lines.push(`FAILED ${name}@${version}: ${reason}${hint}`);
 		}
-	}
+	};
+
+	const noPublisher =
+		'. A 404 on PUT means this name has no trusted publisher for this repository and workflow, or does not ' +
+		'exist yet, which trusted publishing cannot create: publish its first version by hand, add the trusted ' +
+		'publisher, and re-run.';
+	for (const pkg of packages) await publishOne(pkg.name, packageDir(root, pkg.dirName), noPublisher);
 
 	// The root last, and only once every platform package is out: it declares them, so it must not arrive first.
 	if (rootName && failed.length === 0) {
-		if (!(await alreadyThere(rootName))) {
-			try {
-				run('npm', ['publish', '--access', 'public', '--tag', tag], {
-					cwd: root,
-					encoding: 'utf-8',
-					shell: NEEDS_SHELL,
-					stdio: ['ignore', 'pipe', 'pipe'],
-				});
-				published.push(rootName);
-				lines.push(`published ${rootName}@${version} under ${tag}`);
-			} catch (error) {
-				const reason = error instanceof Error ? error.message : String(error);
-				failed.push({ name: rootName, reason });
-				lines.push(`FAILED ${rootName}@${version}: ${reason}`);
-			}
-		}
+		await publishOne(rootName, root, '');
 	} else if (rootName) {
 		lines.push(
 			`did not publish ${rootName}@${version}: ${failed.length} platform package(s) did not go out, and a root ` +
@@ -114,85 +129,13 @@ export async function publishAll({
 	if (published.length === 0 && failed.length === 0 && already.length > 0) {
 		lines.push(`nothing new to publish: all ${already.length} package(s) of ${version} were already on the registry`);
 	}
-	return { published, already, failed, lines };
-}
-
-/**
- * Forward only, so a re-run of an older tag cannot walk `latest` back. A `latest` already naming this version
- * is not written again, since that write would be the one step still needing a live token.
- *
- * @param {object} options
- * @param {readonly string[]} options.names @param {string} options.version
- * @param {(command: string, args: string[], options: any) => unknown} [options.run]
- * @param {(name: string) => string | null} [options.currentLatest] What `latest` says now, or null.
- * @returns {{ moved: string[], left: string[], already: string[], failed: string[], lines: string[], commands: string[] }}
- */
-export function advanceLatest({ names, version, run = execFileSync, currentLatest = readLatest }) {
-	if (distTag(version) !== 'latest') {
-		return {
-			moved: [],
-			left: [...names],
-			already: [],
-			failed: [],
-			lines: [`left latest alone: ${version} is a prerelease`],
-			commands: [],
-		};
-	}
-	const moved = [];
-	const left = [];
-	/** @type {string[]} */
-	const already = [];
-	const failed = [];
-	const lines = [];
-	const commands = [];
-	for (const name of names) {
-		const current = currentLatest(name);
-		if (current === version) {
-			already.push(name);
-			lines.push(`latest already names ${version} for ${name}; nothing to write`);
-			continue;
-		}
-		if (current && isNewer(current, version)) {
-			left.push(name);
-			lines.push(`left ${name} at latest=${current}, which is newer than ${version}`);
-			continue;
-		}
-		try {
-			run('npm', ['dist-tag', 'add', `${name}@${version}`, 'latest'], {
-				encoding: 'utf-8',
-				shell: NEEDS_SHELL,
-				stdio: ['ignore', 'pipe', 'pipe'],
-			});
-			moved.push(name);
-			lines.push(`latest -> ${version} for ${name}`);
-		} catch (error) {
-			failed.push(name);
-			commands.push(`npm dist-tag add ${name}@${version} latest`);
-			lines.push(`could not move latest for ${name}: ${error instanceof Error ? error.message : String(error)}`);
-		}
-	}
-	return { moved, left, already, failed, lines, commands };
-}
-
-/** @param {string} name @returns {string | null} */
-function readLatest(name) {
-	try {
-		return String(
-			execFileSync('npm', ['view', name, 'dist-tags.latest'], {
-				encoding: 'utf-8',
-				shell: NEEDS_SHELL,
-				stdio: ['ignore', 'pipe', 'ignore'],
-			})
-		).trim();
-	} catch {
-		// A package with no `latest` at all, or one that is not published yet. Either way nothing to compare.
-		return null;
-	}
+	return { published, already, failed, tags, lines };
 }
 
 /**
  * Whether `a` is a later release than `b`, on semver's own rules: numeric cores compare segment by segment,
- * and a prerelease sorts BELOW the release it precedes, so 1.2.3 is newer than 1.2.3-next.9.
+ * and a prerelease sorts BELOW the release it precedes, so 1.2.3 is newer than 1.2.3-beta.9. Prereleases are
+ * still compared because a `latest` already on the registry can name one.
  *
  * @param {string} a @param {string} b
  */

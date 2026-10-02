@@ -39,32 +39,52 @@ const manifest = (/** @type {string} */ dir) => JSON.parse(readFileSync(join(dir
 
 test('deps --write puts the release version on every optional dependency', () =>
 	withTempDir('kit-cli-deps-', async (dir) => {
-		repo(dir, '2.0.0-next.3', { '@x/agent-linux-x86_64': '1.0.0-next.1' });
+		repo(dir, '2.0.3', { '@x/agent-linux-x86_64': '1.0.1' });
 		run(dir, ['deps', '--write']);
 		assert.deepEqual(manifest(dir).optionalDependencies, {
-			'@x/agent-linux-x86_64': '2.0.0-next.3',
-			'@x/agent-macos-arm64': '2.0.0-next.3',
+			'@x/agent-linux-x86_64': '2.0.3',
+			'@x/agent-macos-arm64': '2.0.3',
 		});
 	}));
 
 // `npm version` runs this as a lifecycle script, so it rewrites the pins and nothing else.
 test('deps --write leaves the rest of the manifest alone', () =>
 	withTempDir('kit-cli-keep-', async (dir) => {
-		repo(dir, '2.0.0-next.3', { '@x/agent-linux-x86_64': '1.0.0-next.1' });
+		repo(dir, '2.0.3', { '@x/agent-linux-x86_64': '1.0.1' });
 		run(dir, ['deps', '--write']);
 		const written = manifest(dir);
 		assert.equal(written.name, '@x/agent');
-		assert.equal(written.version, '2.0.0-next.3');
+		assert.equal(written.version, '2.0.3');
 		assert.match(readFileSync(join(dir, 'package.json'), 'utf-8'), /^\t"name"/m, 'it reindented the manifest');
 	}));
 
 test('NEGATIVE: deps without --write prints and changes nothing', () =>
 	withTempDir('kit-cli-dry-', async (dir) => {
-		repo(dir, '2.0.0-next.3', { '@x/agent-linux-x86_64': '1.0.0-next.1' });
+		repo(dir, '2.0.3', { '@x/agent-linux-x86_64': '1.0.1' });
 		const before = readFileSync(join(dir, 'package.json'), 'utf-8');
 		const printed = run(dir, ['deps']);
-		assert.match(printed, /2\.0\.0-next\.3/, 'it should still print the block');
+		assert.match(printed, /2\.0\.3/, 'it should still print the block');
 		assert.equal(readFileSync(join(dir, 'package.json'), 'utf-8'), before);
+	}));
+
+// Refused from the version alone, before a staged package or the registry is looked at.
+test('NEGATIVE: publish refuses a prerelease and exits non-zero', () =>
+	withTempDir('kit-cli-pre-', async (dir) => {
+		repo(dir, '2.0.0-beta.1', {});
+		assert.throws(
+			() => execFileSync(process.execPath, [CLI, 'publish'], { cwd: dir, encoding: 'utf-8', stdio: 'pipe' }),
+			(/** @type {any} */ error) => error.status === 1 && /2\.0\.0-beta\.1 is a prerelease/.test(error.stderr)
+		);
+	}));
+
+// The tag is chosen at publish time, so no command writes a dist-tag afterwards.
+test('NEGATIVE: there is no latest command', () =>
+	withTempDir('kit-cli-latest-', async (dir) => {
+		repo(dir, '2.0.3', {});
+		assert.throws(
+			() => execFileSync(process.execPath, [CLI, 'latest'], { cwd: dir, encoding: 'utf-8', stdio: 'pipe' }),
+			(/** @type {any} */ error) => error.status === 2 && !/latest/.test(error.stderr.split('<')[1] ?? '')
+		);
 	}));
 
 test('every path the manifest promises to ship exists', () => {
