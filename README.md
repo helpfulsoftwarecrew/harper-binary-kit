@@ -7,7 +7,7 @@ the installed package where its binary landed rather than computing a path.
 That last sentence is the whole design, and both halves live here: `stage` writes the module that answers, and
 `resolve` is what calls it. They are one package because separately they agree with themselves.
 
-Plain ESM, `node:` builtins only, no build step. Node 22.18+ or 24+.
+Plain ESM, `node:` builtins only, no build step. A configured sigstore check runs `cosign`. Node 22.18+ or 24+.
 
 ## Install
 
@@ -60,6 +60,72 @@ const { bin, share } = buildTree(process.cwd(), 'linux-x86_64');
 Four processes meet at those paths on four separate runners, so a build that recomputes them is a convention
 with two owners.
 
+## Fetch a prebuilt release, instead of building
+
+When upstream publishes archives for every target, a `release` block in the same config replaces the build:
+
+```js
+export default {
+	scope: '@acme/collector-binary',
+	targets: ['linux-x86_64', 'linux-arm64', 'macos-arm64', 'windows-x86_64'],
+	variants: [{ suffix: '' }],
+	binaries: [{ shipsAs: 'otelcol' }],
+	release: {
+		repo: 'open-telemetry/opentelemetry-collector-releases',
+		tag: 'v0.162.0',
+		// Where `pin` reads digests from: one combined file, or a per-asset file with {asset} in its name.
+		checksums: '{asset}.sha256',
+		pins: 'release.sha256', // the default; committed
+		sigstore: {
+			bundle: '{asset}.sigstore.json',
+			issuer: 'https://token.actions.githubusercontent.com',
+			identity:
+				'https://github.com/open-telemetry/opentelemetry-collector-releases/.github/workflows/base-release.yaml@refs/tags/v0.162.0',
+		},
+		assets: {
+			// Named exactly, never derived from the target: upstreams misname assets.
+			'linux-x86_64': {
+				name: 'otelcol_0.162.0_linux_amd64.tar.gz',
+				binaries: { otelcol: 'otelcol' }, // shipsAs -> member
+				files: { 'README.md': 'share/README.md' }, // member -> path under build/<target>; a member ending in / copies a tree
+			},
+			'windows-x86_64': { name: 'otelcol_0.162.0_windows_amd64.tar.gz', binaries: { otelcol: 'otelcol.exe' } },
+			// …one per target
+		},
+	},
+};
+```
+
+```sh
+harper-binary-kit pin                       # write release.sha256 from the release's own checksums; review and commit it
+harper-binary-kit fetch                     # every target: download, check, extract into build/<target>/
+harper-binary-kit fetch --only linux-arm64  # one target
+```
+
+Or from code, with the same config:
+
+```js
+import { fetchRelease, pinRelease } from '@helpfulsoftwarecrew/harper-binary-kit/fetch';
+import { targets } from '@helpfulsoftwarecrew/harper-binary-kit/targets';
+
+const written = await fetchRelease({ root, config, targets: targets(config.targets) });
+```
+
+Each asset is checked against the committed sha256 before a byte of it is written. The pin file's first line
+names the repo and tag it was written for, and a fetch refuses a pin written for another release, since asset
+names often stay the same across tags. With `sigstore` set, the asset's bundle is downloaded from the same
+release and checked with `cosign verify-blob` against the identity and issuer given; a host without `cosign`
+fails the fetch rather than skipping the check. Without `sigstore`, the sha256 pin is the only check, so the
+pin's diff is the review: `pin` takes the digests the release serves when it runs, and nothing else vouches
+for them.
+
+Archives are read in process, `.tar.gz` and `.zip` only. Any member with an absolute path, a drive letter, a
+backslash or a `..` segment refuses the whole archive, a member named for extraction that is a link or a
+directory is refused, and a destination outside `build/<target>` is refused before anything downloads. Zip64
+and encrypted zips are refused. Only the members the config names are written. `fetch` and `pin` download from
+`https://github.com`; `HARPER_BINARY_KIT_RELEASE_BASE` points both at a mirror, which is how the tests reach a
+loopback server. Neither sends a token.
+
 ## Resolve, at runtime
 
 ```js
@@ -84,6 +150,7 @@ answers every request with the first one, and that path exists on disk.
 ## Release, in CI
 
 ```sh
+harper-binary-kit fetch      # a prebuilt upstream release -> build trees, when `release` is declared
 harper-binary-kit stage      # build trees -> npm/<name>/, manifest, index.js, README
 harper-binary-kit floor linux-x86_64   # symbol versions against the image the binaries ship to
 harper-binary-kit verify     # what npm WOULD pack, per package

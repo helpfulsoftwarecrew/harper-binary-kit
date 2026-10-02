@@ -13,6 +13,8 @@ Three entry points, and the first split is load-bearing:
 
 - `./resolve` runs inside a Harper node. No dependencies, and it must stay that way.
 - `./cli` runs on a CI runner. It may grow dependencies; nothing a customer installs loads it.
+- `./fetch` (with `./archive` beneath it) runs on a CI runner in place of a build, for a component that repackages an
+  upstream release. `node:` builtins only, plus `cosign` on PATH when the config asks for a sigstore check.
 - `./layout`, `./packages` and `./targets` are the pure derivations, exported because a consumer's own
   tests have to ask what its config resolves to. `./layout` is also what a build step reads before any of
   this runs: a build that hardcodes `build/<target>/bin` is a fifth process agreeing with a declaration
@@ -31,7 +33,7 @@ nothing about what a consumer does with it.
 
 ## Layout
 
-Ten files under `src/`, ESM with `// @ts-check` and JSDoc, nothing built.
+Twelve files under `src/`, ESM with `// @ts-check` and JSDoc, nothing built.
 
 - `targets.js`: the three vocabularies a platform package lives in - node's `process.platform`/`process.arch`, npm's `os`/`cpu`, and the label the packages publish under. They disagree on every axis.
 - `layout.js`: `build/<target>/bin` and `npm/<name>`. Four processes meet at these paths and none can see the others.
@@ -42,7 +44,27 @@ Ten files under `src/`, ESM with `// @ts-check` and JSDoc, nothing built.
 - `floor.js`: the symbol versions a binary needs against what the target image provides.
 - `publish.js`: refuse a prerelease, then attempt every package the registry does not already hold, each under `latest` when it is newer than that package's current `latest` and under `release-<major>.<minor>` otherwise.
 - `published.js`: what a package's `latest` names now, and the read-back, at the version endpoint.
+- `archive.js`: `.tar.gz` and `.zip` read in memory. Every member path is checked before any is returned, and one bad path refuses the archive.
+- `fetch.js`: an upstream release into the build trees, and the `pin` that writes the sha256 file it checks against.
 - `cli.js`: one command per step.
+
+## The release fetch
+
+Generalised from the Datadog plugin's own download and extract steps, which stay there because that plugin
+builds from source. Its choices, and why:
+
+- Archives are parsed here, not handed to `tar` or `unzip`. GNU tar and bsdtar, the one Windows ships, treat
+  `..`, absolute names and links differently, and a check that depends on which one the runner has is
+  not a check. The tests write hostile archives byte by byte in `test/support/archives.js`, so each entry is
+  exactly the one under test.
+- Every target's writes are planned whole, from verified bytes, before the first write. A refused target leaves
+  its build tree as it was.
+- Sigstore goes through `cosign verify-blob --bundle` rather than a JavaScript verifier, to keep the kit free
+  of dependencies. A configured check with no `cosign` fails; it never degrades to sha256 alone. On
+  2026-10-02, by hand, `pin` and `fetch` ran against the real v0.162.0 Collector release for linux-x86_64 and
+  windows-x86_64 with cosign 3.1.3: both bundles verified, and the extracted `otelcol` was a static x86-64
+  ELF. `cosignCheck` also refused that release's `.sha256` bundle for a flipped byte and for a wrong identity
+  pattern. None of that is a test; the suite never touches the network.
 
 ## The rule every file here follows
 

@@ -20,6 +20,8 @@
 	"exports": {
 		"./resolve": "./src/resolve.js",
 		"./cli": "./src/cli.js",
+		"./fetch": "./src/fetch.js",
+		"./archive": "./src/archive.js",
 		"./layout": "./src/layout.js",
 		"./packages": "./src/packages.js",
 		"./targets": "./src/targets.js",

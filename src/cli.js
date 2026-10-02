@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { resolve as resolvePath } from 'node:path';
 
+import { fetchRelease, pinRelease } from './fetch.js';
 import { checkFloors } from './floor.js';
 import { buildTree } from './layout.js';
 import { allPackages, optionalDependencies } from './packages.js';
@@ -47,6 +48,35 @@ async function load(root) {
 
 /** @type {Record<string, (root: string, argv: string[]) => Promise<void>>} */
 const COMMANDS = {
+	/**
+	 * Download each target's prebuilt release asset, check it against the committed sha256 pin (and its sigstore
+	 * bundle when configured), and extract the members it names into the build tree. `--only <target>` fetches one.
+	 */
+	async fetch(/** @type {string} */ root, /** @type {string[]} */ argv) {
+		const { config, targetList } = await load(root);
+		const onlyAt = argv.indexOf('--only');
+		const only = onlyAt === -1 ? undefined : (argv[onlyAt + 1] ?? fail('--only needs a target name'));
+		const baseUrl = process.env.HARPER_BINARY_KIT_RELEASE_BASE;
+		const written = await fetchRelease({
+			root,
+			config,
+			targets: targetList,
+			say,
+			...(only ? { only } : {}),
+			...(baseUrl ? { baseUrl } : {}),
+		});
+		say(`fetched ${written.length} file(s) from ${config.release.repo} ${config.release.tag}`);
+	},
+
+	/** Write the sha256 pin file from the checksums the release publishes. The diff is what gets reviewed. */
+	async pin(/** @type {string} */ root) {
+		const { config } = await load(root);
+		const baseUrl = process.env.HARPER_BINARY_KIT_RELEASE_BASE;
+		const { path, text } = await pinRelease({ root, config, ...(baseUrl ? { baseUrl } : {}) });
+		process.stdout.write(text);
+		say(`wrote ${path}`);
+	},
+
 	/** Stage every platform package from the build trees. `--only <dirName>` stages one. */
 	async stage(/** @type {string} */ root, /** @type {string[]} */ argv) {
 		const { config, version, targetList } = await load(root);
