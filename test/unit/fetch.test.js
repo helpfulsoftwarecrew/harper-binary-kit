@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import {
+	cosignArgs,
 	cosignCheck,
 	fetchRelease,
 	parseChecksums,
@@ -178,6 +179,86 @@ test('NEGATIVE: a target with no declared asset, or an asset with no pin, is ref
 			assert.deepEqual(asked, []);
 		})
 	));
+
+// The last target fails, so a per-target check would already have written linux. Each case runs in a fresh
+// root; `requests` says whether the failure must come before any download.
+test('NEGATIVE: a full fetch whose last target fails writes nothing for any target', async () => {
+	const swapped = zip([{ name: 'collector-windows-amd64.exe', data: 'MZ swapped', mode: 0o755 }]);
+	const linked = zip([{ name: 'collector-windows-amd64.exe', kind: 'symlink', linkTo: '/bin/sh' }]);
+	const bundles = {
+		[at(`${LINUX_TGZ}.sigstore.json`)]: '{"for":"linux"}',
+		[at(`${WINDOWS_ZIP}.sigstore.json`)]: '{"for":"windows"}',
+	};
+	const sigstore = { bundle: '{asset}.sigstore.json', issuer: 'https://issuer.example', identity: 'x' };
+	/** @type {{ name: string, served: Record<string, string | Uint8Array>, pins?: string, config: any, requests: boolean, error: RegExp, verifyBundle?: import('../../src/fetch.js').BundleCheck }[]} */
+	const cases = [
+		{
+			name: 'sha mismatch',
+			served: { ...SERVED, [at(WINDOWS_ZIP)]: swapped },
+			config: configWith(),
+			requests: true,
+			error: new RegExp(`${WINDOWS_ZIP} has sha256 ${sha256(swapped)}, and the pin says`),
+		},
+		{
+			name: 'missing pin',
+			served: SERVED,
+			pins: `${sha256(linuxArchive)}  ${LINUX_TGZ}\n`,
+			config: configWith(),
+			requests: false,
+			error: new RegExp(`pins no sha256 for ${WINDOWS_ZIP}`),
+		},
+		{
+			name: 'undeclared asset',
+			served: SERVED,
+			config: (() => {
+				const config = configWith();
+				delete config.release.assets['windows-x86_64'];
+				return config;
+			})(),
+			requests: false,
+			error: /declares no asset for windows-x86_64/,
+		},
+		{
+			name: 'bad bundle',
+			served: { ...SERVED, ...bundles },
+			config: configWith({ sigstore }),
+			requests: true,
+			error: /the sigstore bundle for collector-windows-amd64\.exe\.zip did not verify/,
+			verifyBundle: async ({ assetName }) => {
+				if (assetName === WINDOWS_ZIP) throw new Error(`the sigstore bundle for ${assetName} did not verify`);
+			},
+		},
+		{
+			name: 'member is a link',
+			served: { ...SERVED, [at(WINDOWS_ZIP)]: linked },
+			pins: `${sha256(linuxArchive)}  ${LINUX_TGZ}\n${sha256(linked)}  ${WINDOWS_ZIP}\n`,
+			config: configWith(),
+			requests: true,
+			error: /member collector-windows-amd64\.exe is a link, not a file/,
+		},
+	];
+	for (const c of cases)
+		await withTempDir('kit-fetch-last-', (root) =>
+			withReleaseServer(c.served, async (baseUrl, asked) => {
+				commitPins(root, c.pins);
+				await assert.rejects(
+					fetchRelease({
+						root,
+						config: c.config,
+						targets: targets(['linux-x86_64', 'windows-x86_64']),
+						baseUrl,
+						verifyBundle: c.verifyBundle ?? neverCalled,
+					}),
+					c.error,
+					c.name
+				);
+				assert.equal(existsSync(join(root, 'build')), false, `${c.name}: an earlier target was written`);
+				assert.deepEqual(readdirSync(root), ['release.sha256'], c.name);
+				if (c.requests) assert.ok(asked.includes(at(LINUX_TGZ)), `${c.name}: linux was never downloaded`);
+				else assert.deepEqual(asked, [], `${c.name}: a request went out before the refusal`);
+			})
+		);
+});
 
 test('NEGATIVE: a pin file written for another tag is refused as stale, not as a mismatch', () =>
 	withTempDir('kit-fetch-stale-', async (root) => {
@@ -360,7 +441,34 @@ test('NEGATIVE: releaseConfig refuses an asset for an undeclared target or binar
 			releaseConfig(configWith({ sigstore: { bundle: '{asset}.sigstore.json', issuer: 'https://issuer.example' } })),
 		/exactly one of identity and identityRegexp/
 	);
+	assert.throws(
+		() => releaseConfig(configWith({ sigstore: { bundle: '{asset}.sigstore.json', issuer: '', identity: 'x' } })),
+		/issuer must name the OIDC issuer/
+	);
 	assert.throws(() => releaseConfig({ ...config, release: undefined }), /declares no `release` block/);
+});
+
+test('cosign gets an exact identity as given and an identity pattern anchored at both ends', () => {
+	const base = { bundle: '{asset}.sigstore.json', issuer: 'https://issuer.example' };
+	assert.deepEqual(cosignArgs({ ...base, identity: 'https://a/wf.yaml@refs/tags/v1' }, 'b.json', 'blob'), [
+		'verify-blob',
+		'--bundle',
+		'b.json',
+		'--certificate-identity',
+		'https://a/wf.yaml@refs/tags/v1',
+		'--certificate-oidc-issuer',
+		'https://issuer.example',
+		'blob',
+	]);
+	const args = cosignArgs({ ...base, identityRegexp: 'https://a/.*|https://b/x' }, 'b.json', 'blob');
+	const pattern = args[args.indexOf('--certificate-identity-regexp') + 1] ?? '';
+	assert.equal(pattern, '^(?:https://a/.*|https://b/x)$');
+	// JavaScript and Go's RE2 agree on this subset, so this is what cosign will match.
+	const re = new RegExp(pattern);
+	assert.ok(re.test('https://a/wf.yaml'));
+	assert.ok(re.test('https://b/x'));
+	assert.equal(re.test('https://evil.example/?https://a/'), false);
+	assert.equal(re.test('https://b/x-and-more'), false);
 });
 
 test('the CLI fetches with `fetch --only` and pins with `pin`', () =>

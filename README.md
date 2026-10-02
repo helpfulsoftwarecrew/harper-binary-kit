@@ -111,10 +111,13 @@ import { targets } from '@helpfulsoftwarecrew/harper-binary-kit/targets';
 const written = await fetchRelease({ root, config, targets: targets(config.targets) });
 ```
 
-Each asset is checked against the committed sha256 before a byte of it is written. The pin file's first line
+A fetch is all or nothing across the targets it was asked for. Every target's asset and pin are found before
+anything downloads, and every asset is checked against the committed sha256 and planned before the first file
+is written, so one bad target leaves every build tree as it was. The pin file's first line
 names the repo and tag it was written for, and a fetch refuses a pin written for another release, since asset
 names often stay the same across tags. With `sigstore` set, the asset's bundle is downloaded from the same
-release and checked with `cosign verify-blob` against the identity and issuer given; a host without `cosign`
+release and checked with `cosign verify-blob` against the identity and issuer given. An `identityRegexp` must
+match the whole identity: the kit anchors it before cosign sees it. A host without `cosign`
 fails the fetch rather than skipping the check. Without `sigstore`, the sha256 pin is the only check, so the
 pin's diff is the review: `pin` takes the digests the release serves when it runs, and nothing else vouches
 for them.

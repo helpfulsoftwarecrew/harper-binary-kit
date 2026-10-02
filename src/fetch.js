@@ -1,7 +1,7 @@
 // @ts-check
 // A prebuilt upstream release into the build trees: download each target's asset, check it against the sha256
 // committed in the repo (and a sigstore bundle when one is configured), and only then write the members it
-// names. Nothing is written for a target whose bytes failed a check, and every failure is a throw.
+// names. A run writes nothing until every chosen target has passed every check, and every failure is a throw.
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -29,7 +29,8 @@ import { binaryFilename } from './targets.js';
  * @property {string} bundle The bundle's asset name, with `{asset}` standing for the asset it signs.
  * @property {string} issuer The OIDC issuer the signing certificate must name.
  * @property {string} [identity] The certificate identity, exactly.
- * @property {string} [identityRegexp] Or a pattern for it; one of the two is required.
+ * @property {string} [identityRegexp] Or a pattern for it, matched against the whole identity; one of the two
+ *   is required.
  */
 
 /**
@@ -89,9 +90,13 @@ export function releaseConfig(config) {
 	if (sigstore) {
 		if (typeof sigstore.bundle !== 'string' || !sigstore.bundle.includes('{asset}'))
 			throw new Error('release.sigstore.bundle must name the bundle asset with {asset} in it');
-		if (typeof sigstore.issuer !== 'string') throw new Error('release.sigstore.issuer must name the OIDC issuer');
+		if (typeof sigstore.issuer !== 'string' || sigstore.issuer === '')
+			throw new Error('release.sigstore.issuer must name the OIDC issuer');
 		if (!sigstore.identity === !sigstore.identityRegexp)
 			throw new Error('release.sigstore needs exactly one of identity and identityRegexp');
+		const identity = sigstore.identity ?? sigstore.identityRegexp;
+		if (typeof identity !== 'string')
+			throw new Error('release.sigstore.identity and identityRegexp must be strings when given');
 	}
 	return release;
 }
@@ -153,6 +158,19 @@ export function readPins(root, release) {
 }
 
 /**
+ * The `cosign verify-blob` arguments for one bundle. cosign matches `--certificate-identity-regexp` unanchored,
+ * so the pattern is wrapped to match the whole identity: `^https://` alone would accept any https signer.
+ *
+ * @param {SigstoreConfig} sigstore @param {string} bundlePath @param {string} blobPath @returns {string[]}
+ */
+export function cosignArgs(sigstore, bundlePath, blobPath) {
+	const identity = sigstore.identity
+		? ['--certificate-identity', sigstore.identity]
+		: ['--certificate-identity-regexp', `^(?:${sigstore.identityRegexp})$`];
+	return ['verify-blob', '--bundle', bundlePath, ...identity, '--certificate-oidc-issuer', sigstore.issuer, blobPath];
+}
+
+/**
  * Check a bundle with `cosign verify-blob`. A missing cosign is a refusal, never a skip: the config said this
  * release is signed, and a fetch that quietly stopped checking would read the same as one that checked.
  *
@@ -167,18 +185,7 @@ export function cosignCheck(cosign = 'cosign') {
 			const bundlePath = join(dir, 'bundle.json');
 			writeFileSync(blobPath, blob);
 			writeFileSync(bundlePath, bundle);
-			const identity = sigstore.identity
-				? ['--certificate-identity', sigstore.identity]
-				: ['--certificate-identity-regexp', /** @type {string} */ (sigstore.identityRegexp)];
-			await run(cosign, [
-				'verify-blob',
-				'--bundle',
-				bundlePath,
-				...identity,
-				'--certificate-oidc-issuer',
-				sigstore.issuer,
-				blobPath,
-			]).catch((/** @type {any} */ error) => {
+			await run(cosign, cosignArgs(sigstore, bundlePath, blobPath)).catch((/** @type {any} */ error) => {
 				const why =
 					error?.code === 'ENOENT' ? `${cosign} is not on PATH` : String(error?.stderr || error?.message).trim();
 				throw new Error(`the sigstore bundle for ${assetName} did not verify: ${why}`);
@@ -252,7 +259,8 @@ export function planWrites(bytes, asset, on, root) {
  */
 
 /**
- * Fetch, check and extract each target's asset into its build tree. Returns every path written.
+ * Fetch, check and extract each chosen target's asset into its build tree, returning every path written. Every
+ * pin is checked before the first download and every asset verified and planned before the first write.
  *
  * @param {FetchOptions} options @returns {Promise<string[]>}
  */
@@ -271,15 +279,18 @@ export async function fetchRelease({
 	const chosen = only ? targets.filter((t) => t.name === only) : targets;
 	if (chosen.length === 0) throw new Error(`--only ${only} matches no declared target`);
 
-	/** @type {string[]} */
-	const written = [];
-	for (const on of chosen) {
+	const declared = chosen.map((on) => {
 		const asset = release.assets[on.name];
 		if (!asset) throw new Error(`release.assets declares no asset for ${on.name}`);
 		const pinned = pins.get(asset.name);
 		if (!pinned || !SHA256.test(pinned))
 			throw new Error(`${release.pins ?? DEFAULT_PINS} pins no sha256 for ${asset.name}`);
+		return { on, asset, pinned };
+	});
 
+	/** @type {{ to: string, data: Uint8Array, mode: number }[]} */
+	const writes = [];
+	for (const { on, asset, pinned } of declared) {
 		const bytes = await download(assetUrl(release, asset.name, baseUrl));
 		const actual = sha256(bytes);
 		if (actual !== pinned)
@@ -291,15 +302,16 @@ export async function fetchRelease({
 			await verifyBundle({ blob: bytes, bundle, sigstore: release.sigstore, assetName: asset.name });
 			say(`verified: ${asset.name} sigstore bundle ${bundleName}`);
 		}
+		writes.push(...planWrites(bytes, asset, on, root));
+	}
 
-		// Planned whole before the first write, so a bad member leaves this target's tree as it was.
-		const writes = planWrites(bytes, asset, on, root);
-		for (const { to, data, mode } of writes) {
-			mkdirSync(dirname(to), { recursive: true });
-			writeFileSync(to, data, { mode });
-			written.push(to);
-			say(`extracted ${to}`);
-		}
+	/** @type {string[]} */
+	const written = [];
+	for (const { to, data, mode } of writes) {
+		mkdirSync(dirname(to), { recursive: true });
+		writeFileSync(to, data, { mode });
+		written.push(to);
+		say(`extracted ${to}`);
 	}
 	return written;
 }

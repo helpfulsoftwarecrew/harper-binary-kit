@@ -57,8 +57,11 @@ builds from source. Its choices, and why:
   `..`, absolute names and links differently, and a check that depends on which one the runner has is
   not a check. The tests write hostile archives byte by byte in `test/support/archives.js`, so each entry is
   exactly the one under test.
-- Every target's writes are planned whole, from verified bytes, before the first write. A refused target leaves
-  its build tree as it was.
+- A run is all or nothing. Every chosen target's asset and pin are found before the first download, and every
+  asset is downloaded, verified and planned before the first write, so a refusal in the last target leaves
+  every build tree as it was. A disk failure partway through the writes can still leave some written.
+- cosign matches `--certificate-identity-regexp` unanchored, so `cosignArgs` wraps the pattern in `^(?:...)$`;
+  `^https://` alone would otherwise accept any https signer.
 - Sigstore goes through `cosign verify-blob --bundle` rather than a JavaScript verifier, to keep the kit free
   of dependencies. A configured check with no `cosign` fails; it never degrades to sha256 alone. On
   2026-10-02, by hand, `pin` and `fetch` ran against the real v0.162.0 Collector release for linux-x86_64 and
