@@ -86,7 +86,7 @@ jobs:
             const { version } = JSON.parse(require("node:fs").readFileSync("package.json", "utf8"));
             const identifier = version.split("-")[1]?.split(".")[0];
             if (identifier !== undefined && !/^[a-zA-Z][a-zA-Z0-9-]*$/.test(identifier)) {
-              console.log(`::error::Version ${version} has the prerelease identifier "${identifier}", which is what npm version prerelease writes when no --preid was given. Name the prerelease (1.2.3-next.0, 1.2.3-rc.0), then re-tag.`);
+              console.log(`::error::Version ${version} has the prerelease identifier "${identifier}", which is what npm version prerelease writes when no --preid was given. Name the prerelease (1.2.3-next.0, 1.2.3-beta.0), then re-tag.`);
               process.exit(1);
             }
             const tag = identifier === undefined ? "latest" : "next";
@@ -112,7 +112,7 @@ jobs:
           npm publish --access public --tag '${{ steps.dist.outputs.tag }}'
 
       # Normally finds latest already naming this version and writes nothing, so an expired token cannot turn a
-      # finished release red. isNewer() rather than `sort -V`, which ranks 1.0.0-rc.1 above 1.0.0.
+      # finished release red. isNewer() rather than `sort -V`, which ranks 1.0.0-beta.1 above 1.0.0.
       - name: Point latest at this release
         if: steps.dist.outputs.tag == 'latest'
         env:

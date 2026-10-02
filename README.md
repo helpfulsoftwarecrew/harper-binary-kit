@@ -124,7 +124,7 @@ stable version under `latest`. Then it reads the registry back, at the _version_
 a partial release that never happened.
 
 **`latest`** moves for a stable version only, and forward only. npm assigns `latest` on a package's first
-publish whatever `--tag` said, so a line whose first version is a candidate shows that candidate as `latest`
+publish whatever `--tag` said, so a line whose first version is a prerelease shows that prerelease as `latest`
 until the stable release; `latest` is what npmjs.com shows and what a bare `npm install` gets. A `latest` that
 already names the release is left alone with no registry write.
 

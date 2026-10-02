@@ -62,8 +62,8 @@ test('NEGATIVE: an add-on variant is never an optionalDependency', () => {
 // One version across the release, because the base package pins its optionalDependencies at exactly this one:
 // a platform package a version behind is not installed, it is refused as unresolvable.
 test('every optional dependency is pinned at the release version, never a range', () => {
-	const pinned = optionalDependencies(CONFIG, targets(['linux-x86_64']), '8.0.0-rc.1');
-	assert.deepEqual(Object.values(pinned), ['8.0.0-rc.1']);
+	const pinned = optionalDependencies(CONFIG, targets(['linux-x86_64']), '8.0.0-beta.1');
+	assert.deepEqual(Object.values(pinned), ['8.0.0-beta.1']);
 	assert.ok(!Object.values(pinned).some((v) => /[\^~*]/.test(v)));
 });
 

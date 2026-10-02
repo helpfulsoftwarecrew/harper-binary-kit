@@ -34,8 +34,8 @@ const nothingThere = holding([]);
 
 test('a prerelease publishes under next, a stable one under latest', () => {
 	assert.equal(distTag('9.9.9-next.10'), 'next');
-	assert.equal(distTag('1.0.0-rc.3'), 'next', 'a candidate is a prerelease like any other');
-	assert.equal(distTag('8.0.0-rc.1'), 'next');
+	assert.equal(distTag('1.0.0-alpha.3'), 'next', 'an alpha is a prerelease like any other');
+	assert.equal(distTag('8.0.0-beta.1'), 'next');
 	assert.equal(distTag('2.0.0-beta.4'), 'next');
 	assert.equal(distTag('1.0.0'), 'latest');
 });
@@ -137,7 +137,7 @@ test('NEGATIVE: a re-run skips what the registry already holds, publishes the re
 		root: '/repo',
 		packages: PACKAGES,
 		rootName: '@x/a',
-		version: '1.0.0-rc.1',
+		version: '1.0.0-beta.1',
 		onRegistry: holding(out),
 		run: (/** @type {string} */ _c, /** @type {string[]} */ _a, /** @type {any} */ options) => {
 			cwds.push(String(options.cwd));
@@ -152,7 +152,7 @@ test('NEGATIVE: a re-run skips what the registry already holds, publishes the re
 	assert.deepEqual(already, out);
 	assert.deepEqual(published, ['@x/a-macos-arm64', '@x/a']);
 	assert.equal(cwds.length, 2, 'npm publish ran for a version the registry already held');
-	assert.ok(lines.some((line) => line.includes('already published @x/a-linux-x86_64@1.0.0-rc.1')));
+	assert.ok(lines.some((line) => line.includes('already published @x/a-linux-x86_64@1.0.0-beta.1')));
 });
 
 test('a re-run that finds the whole release out publishes nothing, and says so', async () => {
@@ -248,13 +248,13 @@ test('NEGATIVE: latest that already names this version is left alone, with no re
 	assert.match(String(lines[0]), /latest already names 1\.0\.0 for @x\/a/);
 });
 
-// A candidate on next must never become what a bare `npm install` gets.
+// A prerelease on next must never become what a bare `npm install` gets.
 test('NEGATIVE: a prerelease never moves latest, and never asks the registry', () => {
 	let runs = 0;
 	let asked = 0;
 	const { moved, left, failed, lines } = advanceLatest({
 		names: ['@x/a', '@x/a-linux-x86_64'],
-		version: '8.0.0-rc.1',
+		version: '8.0.0-beta.1',
 		currentLatest: () => {
 			asked++;
 			return '7.0.0';
@@ -269,7 +269,7 @@ test('NEGATIVE: a prerelease never moves latest, and never asks the registry', (
 	assert.deepEqual(moved, []);
 	assert.deepEqual(failed, []);
 	assert.deepEqual(left, ['@x/a', '@x/a-linux-x86_64']);
-	assert.deepEqual(lines, ['left latest alone: 8.0.0-rc.1 is a prerelease']);
+	assert.deepEqual(lines, ['left latest alone: 8.0.0-beta.1 is a prerelease']);
 });
 
 // A prerelease sorts below the release it precedes, so 1.2.3 replacing 1.2.3-next.9 is forward.
@@ -278,7 +278,7 @@ test('a stable release is newer than its own prereleases', () => {
 	assert.equal(isNewer('1.2.3-next.9', '1.2.3'), false);
 	assert.equal(isNewer('9.9.9-next.10', '9.9.9-next.9'), true, 'next.10 sorts above next.9, not below it');
 	assert.equal(isNewer('9.9.9-next.9', '9.9.9-next.10'), false);
-	assert.equal(isNewer('1.0.0', '1.0.0-rc.1'), true, 'the stable release is newer than its candidate');
+	assert.equal(isNewer('1.0.0', '1.0.0-beta.1'), true, 'the stable release is newer than its prerelease');
 	assert.equal(isNewer('1.10.0', '1.9.0'), true);
 });
 

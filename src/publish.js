@@ -22,7 +22,7 @@ export function distTag(version) {
 		throw new Error(
 			`version ${version} has the prerelease identifier "${identifier}", a number, which is what ` +
 				`\`npm version prerelease\` writes when no --preid was given. Name the prerelease (1.2.3-next.0, ` +
-				`1.2.3-rc.0) and re-tag.`
+				`1.2.3-beta.0) and re-tag.`
 		);
 	}
 	return 'next';
